@@ -17,6 +17,7 @@ COMMANDS = [
 	'haplotag',
 	'genotype',
 	'find_snv_candidates',
+	'split',
 ]
 
 logger = logging.getLogger(__name__)
