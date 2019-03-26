@@ -207,7 +207,7 @@ def run_haplotag(
 
 		for alignment in bam_reader:
 			n_alignments += 1
-			haplotype_name = 'none'
+			haplotype_name = None
 			alignment.set_tag('HP', value=None)
 			alignment.set_tag('PC', value=None)
 			alignment.set_tag('PS', value=None)
@@ -320,7 +320,10 @@ def run_haplotag(
 									break
 			bam_writer.write(alignment)
 			if haplotag_list_file is not None:
-				print(alignment.query_name, haplotype_name, phaseset, sep='\t', file=haplotag_list_file)
+				if haplotype_name == None:
+					print(alignment.query_name, 'none', 'none', sep='\t',file=haplotag_list_file)
+				else:
+					print(alignment.query_name, haplotype_name, phaseset, sep='\t', file=haplotag_list_file)
 			if n_alignments % 100000 == 0:
 				logger.info('Processed %d alignment records.', n_alignments)
 
