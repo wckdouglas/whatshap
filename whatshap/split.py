@@ -25,8 +25,11 @@ def add_arguments(parser):
 	arg('--output-h2', default=None,
 		help='Output file to write reads from Haplotype 2 to. Use ending .gz to '
 		'create gzipped file.')
+	arg('--output-untagged', default=None,
+		help='Output file to write untagged reads to. Use ending .gz to '
+		'create gzipped file.')
 	arg('--add-untagged', default=False, action='store_true',
-		help='Add reads without tag to both output streams.')
+		help='Add reads without tag to both H1 and H2 output streams.')
 	arg('--pigz', default=False, action='store_true',
 		help='Use the pigz program for gzipping output.')
 	arg('reads_file', metavar='FASTQ', help='Input FASTQ file with reads (can be gzipped)')
@@ -79,6 +82,7 @@ def run_split(
 		list_file,
 		output_h1=None,
 		output_h2=None,
+		output_untagged=None,
 		add_untagged=False,
 		pigz=False,
 	):
@@ -102,6 +106,7 @@ def run_split(
 
 		output_h1_file = open_possibly_gzipped(output_h1, 'w', pigz)
 		output_h2_file = open_possibly_gzipped(output_h2, 'w', pigz)
+		output_untagged_file = open_possibly_gzipped(output_untagged, 'w', pigz)
 
 		n_reads = 0
 		for name, record in read_fastq(reads_file):
@@ -118,10 +123,17 @@ def run_split(
 					for line in record:
 						output_h2_file.write(line.encode('utf-8'))
 
+			if output_untagged_file is not None:
+				if h==0:
+					for line in record:
+						output_untagged_file.write(line.encode('utf-8'))
+
 		if output_h1_file is not None:
 			output_h1_file.close()
 		if output_h2_file is not None:
 			output_h2_file.close()
+		if output_untagged_file is not None:
+			output_untagged_file.close()
 
 	logger.info('\n== SUMMARY ==')
 	logger.info('Total reads processed:              %12d', n_reads)
