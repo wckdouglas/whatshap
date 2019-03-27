@@ -645,13 +645,14 @@ def run_haplotag(
 						n_tagged += is_tagged
 
 					bam_writer.write(alignment)
-					_ = haplotag_writer.write(
-						'{}\t{}\t{}\n'.format(
-							alignment.query_name,
-							haplotype_name,
-							phaseset
+					if not (alignment.is_secondary or alignment.is_supplementary):
+						_ = haplotag_writer.write(
+							'{}\t{}\t{}\n'.format(
+								alignment.query_name,
+								haplotype_name,
+								phaseset
+							)
 						)
-					)
 
 					if n_alignments % 100000 == 0:
 						logger.debug('Processed {} alignment records.'.format(n_alignments))
