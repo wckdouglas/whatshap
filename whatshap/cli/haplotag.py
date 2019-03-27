@@ -319,7 +319,7 @@ def run_haplotag(
 									n_tagged += 1
 									break
 			bam_writer.write(alignment)
-			if haplotag_list_file is not None:
+			if (haplotag_list_file is not None) and (not alignment.is_secondary) and (alignment.flag & 2048 == 0):
 				if haplotype_name == None:
 					print(alignment.query_name, 'none', 'none', sep='\t',file=haplotag_list_file)
 				else:
