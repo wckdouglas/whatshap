@@ -193,7 +193,7 @@ def run_haplotag(
 				haplotag_list_file = gzip.open(haplotag_list, 'wt')
 			else:
 				haplotag_list_file = open(haplotag_list, 'w')
-			print('#readname\thaplotype\tphaseset', file=haplotag_list_file)
+			print('#readname\thaplotype\tphaseset\tchromosome', file=haplotag_list_file)
 
 		chromosome_name = None
 		chromosome_id = None
@@ -321,9 +321,9 @@ def run_haplotag(
 			bam_writer.write(alignment)
 			if (haplotag_list_file is not None) and (not alignment.is_secondary) and (alignment.flag & 2048 == 0):
 				if haplotype_name == None:
-					print(alignment.query_name, 'none', 'none', sep='\t',file=haplotag_list_file)
+					print(alignment.query_name, 'none', 'none', 'none', sep='\t',file=haplotag_list_file)
 				else:
-					print(alignment.query_name, haplotype_name, phaseset, sep='\t', file=haplotag_list_file)
+					print(alignment.query_name, haplotype_name, phaseset, bam_reader.get_reference_name(alignment.reference_id), sep='\t', file=haplotag_list_file)
 			if n_alignments % 100000 == 0:
 				logger.info('Processed %d alignment records.', n_alignments)
 
