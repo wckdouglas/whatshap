@@ -32,6 +32,9 @@ def add_arguments(parser):
 		help='Add reads without tag to both H1 and H2 output streams.')
 	arg('--pigz', default=False, action='store_true',
 		help='Use the pigz program for gzipping output.')
+	arg('--only-largest-block', default=False, action='store_true',
+		help='Only consider reads to be tagged if they belong to the largest '
+		'phased block (in terms of read count) on their respective chromosome')
 	arg('reads_file', metavar='FASTQ', help='Input FASTQ file with reads (can be gzipped)')
 	arg('list_file', metavar='LIST',
 		help='Tab-separated list with (at least) two columns <readname>,<haplotype> (can be gzipped)')
@@ -85,6 +88,7 @@ def run_split(
 		output_untagged=None,
 		add_untagged=False,
 		pigz=False,
+		only_largest_block=False,
 	):
 
 	timers = StageTimer()
@@ -92,17 +96,54 @@ def run_split(
 
 	with ExitStack() as stack:
 
+		HAPLOTYPE_TO_INT = {'none': 0, 'H1': 1, 'H2': 2}
+		largest_block_map = None
+		if only_largest_block:
+			# do one first pass and determine largest blocks
+			with open_possibly_gzipped(list_file) as f:
+				block_sizes = defaultdict(int)
+				logger.info('Reading %s to determine block sizes', list_file)
+				for line in f:
+					if line.startswith('#'):
+						continue
+					fields = line.split()
+					assert len(fields) == 4, 'Error parsing input file "{}"'.format(list_file)
+					readname, haplotype_name, phaseset, chromosome = fields
+					if HAPLOTYPE_TO_INT[haplotype_name] != 0:
+						block_sizes[(chromosome,phaseset)] += 1
+			largest_block_map = dict()
+			chromosomes = set(chromosome for chromosome,phaseset in block_sizes.keys())
+			logger.info('Largest blocks per chromosome:')
+			for chromosome in sorted(chromosomes):
+				blocks = sorted(((size, phaseset) for (_chromosome,phaseset), size in block_sizes.items() if _chromosome == chromosome), reverse=True)
+				largest_block_size, largest_block = blocks[0]
+				largest_block_map[chromosome] = largest_block
+				logger.info('   %s: phaseset "%s" with %d tagged reads', chromosome, largest_block, largest_block_size)
+
 		# mapping of read names to haplotypes, 0 means untagged
 		haplotype = defaultdict(int)
+		tags_removed = 0
+		assigned_to_haplotype = 0
 		with open_possibly_gzipped(list_file) as f:
 			logger.info('Reading %s', list_file)
-			HAPLOTYPE_TO_INT = {'none': 0, 'H1': 1, 'H2': 2}
 			for line in f:
 				if line.startswith('#'):
 					continue
 				fields = line.split()
-				haplotype[fields[0]] = HAPLOTYPE_TO_INT[fields[1]]
-		logger.info('... read %d records with haplotype assignments', len(haplotype))
+				assert len(fields) == 4, 'Error parsing input file "{}"'.format(list_file)
+				readname, haplotype_name, phaseset, chromosome = fields
+				haplotype_int = HAPLOTYPE_TO_INT[haplotype_name]
+				if only_largest_block:
+					if (haplotype_int != 0) and (largest_block_map[chromosome] != phaseset):
+						tags_removed += 1
+						haplotype_int = 0
+				haplotype[readname] = haplotype_int
+				if haplotype_int != 0:
+					assigned_to_haplotype += 1
+		logger.info('... read %d records:', len(haplotype))
+		logger.info('...   %d reads are assigned to a haplotype.', assigned_to_haplotype)
+		if only_largest_block:
+			logger.info('...   %d reads have been unassigned because they are not from the largest block.', tags_removed)
 
 		output_h1_file = open_possibly_gzipped(output_h1, 'w', pigz)
 		output_h2_file = open_possibly_gzipped(output_h2, 'w', pigz)
