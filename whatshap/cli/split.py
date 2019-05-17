@@ -38,8 +38,8 @@ def add_arguments(parser):
 
 
 def validate(args, parser):
-	if (args.output_h1 is None) and (args.output_h2 is None):
-		parser.error('Nothing to be done since neither --output-h1 nor --output-h2 are given.')
+	if (args.output_h1 is None) and (args.output_h2 is None) and (args.output_untagged is None):
+		parser.error('Nothing to be done since neither --output-h1 nor --output-h2 nor --output-untagged are given.')
 
 
 def open_possibly_gzipped(filename, readwrite='r', pigz=False):
