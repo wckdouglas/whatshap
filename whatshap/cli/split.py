@@ -35,6 +35,8 @@ def add_arguments(parser):
 	arg('--only-largest-block', default=False, action='store_true',
 		help='Only consider reads to be tagged if they belong to the largest '
 		'phased block (in terms of read count) on their respective chromosome')
+	arg('--read-lengths-histogram', default=None,
+		help='Output file to write read lengths histogram to in tab separated format.')
 	arg('reads_file', metavar='FASTQ', help='Input FASTQ file with reads (can be gzipped)')
 	arg('list_file', metavar='LIST',
 		help='Tab-separated list with (at least) two columns <readname>,<haplotype> (can be gzipped)')
@@ -89,6 +91,7 @@ def run_split(
 		add_untagged=False,
 		pigz=False,
 		only_largest_block=False,
+		read_lengths_histogram=None,
 	):
 
 	timers = StageTimer()
@@ -149,10 +152,18 @@ def run_split(
 		output_h2_file = open_possibly_gzipped(output_h2, 'w', pigz)
 		output_untagged_file = open_possibly_gzipped(output_untagged, 'w', pigz)
 
+		read_lengths_histogram_dict = dict()
+
 		n_reads = 0
 		for name, record in read_fastq(reads_file):
 			n_reads += 1 
 			h = haplotype[name]
+
+			if read_lengths_histogram is not None:
+				read_length = len(record[1].strip())
+				if read_length not in read_lengths_histogram_dict:
+					read_lengths_histogram_dict[read_length] = [0,0,0]
+				read_lengths_histogram_dict[read_length][h] += 1
 
 			if output_h1_file is not None:
 				if (h==1) or (h==0 and add_untagged):
@@ -168,6 +179,13 @@ def run_split(
 				if h==0:
 					for line in record:
 						output_untagged_file.write(line.encode('utf-8'))
+
+		if read_lengths_histogram is not None:
+			with open(read_lengths_histogram, 'wt') as t:
+				print('#length', 'count-untagged', 'count-h1', 'count-h2', sep='\t', file=t)
+				for length in sorted(read_lengths_histogram_dict.keys()):
+					print(length, *(read_lengths_histogram_dict[length]), sep='\t', file=t)
+				t.close()
 
 		if output_h1_file is not None:
 			output_h1_file.close()
