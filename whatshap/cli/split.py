@@ -41,7 +41,10 @@ def add_arguments(parser):
 		help='Output file to write read lengths histogram to in tab separated format.')
 	arg('reads_file', metavar='READS', help='Input FASTQ/BAM file with reads (fastq can be gzipped)')
 	arg('list_file', metavar='LIST',
-		help='Tab-separated list with (at least) two columns <readname>,<haplotype> (can be gzipped)')
+		help='Tab-separated list with (at least) two columns <readname> and <haplotype> (can be gzipped). '
+			'Currently, the two haplotypes have to be named H1 and H2 (or none). Alternatively, the '
+			'output of the "haplotag" command can be used (4 columns), and this is required for using '
+			'the "--only-largest-block" option (need phaseset and chromosome info).')
 
 
 def validate(args, parser):
@@ -84,6 +87,32 @@ def read_fastq(filename):
 		yield name, record
 
 
+def check_haplotag_list_information(haplotag_list):
+	"""
+	Check if the haplotag list file has at least 4 columns
+	(assumed to be read name, haplotype, phaseset, chromosome),
+	or at least 2 columns (as above). Fails if the haplotag file
+	is not tab-separated
+
+	:param haplotag_list: Tab-separated file with at least 2 or 4 columns
+	:return:
+	"""
+	open_file = open_possibly_gzipped(haplotag_list)
+	first_line = open_file.readline().strip()
+	try:
+		_, _, _, _ = first_line.split('\t')[:4]
+	except ValueError:
+		try:
+			_, _ = first_line.split('\t')[:2]
+		except ValueError:
+			raise ValueError('First line of haplotag list file does not have '
+							'at least 2 columns, or it is not tab-separated: {}'.format(first_line))
+		else:
+			return False
+	else:
+		return True
+
+
 def run_split(
 		reads_file,
 		list_file,
@@ -97,11 +126,24 @@ def run_split(
 	):
 
 	timers = StageTimer()
-	timers.start('overall')
+	timers.start('split-run')
+
+	# TODO: obviously this won't work for more than two haplotypes
+	haplotype_to_int = {'none': 0, 'H1': 1, 'H2': 2}
 
 	with ExitStack() as stack:
+		timers.start('split-init')
 
-		HAPLOTYPE_TO_INT = {'none': 0, 'H1': 1, 'H2': 2}
+		has_haplo_chrom_info = check_haplotag_list_information(list_file)
+
+		if only_largest_block:
+			logger.debug('User selected "--only-largest-block", this requires chromosome '
+						'and phaseset information to be present in the haplotag list file.')
+			if not has_haplo_chrom_info:
+				raise ValueError('The haplotag list file does not contain phaseset and chromosome '
+								'information, which is required to select only reads from the '
+								'largest phased block. Columns 3 and 4 are missing.')
+
 		largest_block_map = None
 		if only_largest_block:
 			# do one first pass and determine largest blocks
@@ -114,7 +156,7 @@ def run_split(
 					fields = line.split()
 					assert len(fields) == 4, 'Error parsing input file "{}"'.format(list_file)
 					readname, haplotype_name, phaseset, chromosome = fields
-					if HAPLOTYPE_TO_INT[haplotype_name] != 0:
+					if haplotype_to_int[haplotype_name] != 0:
 						block_sizes[(chromosome,phaseset)] += 1
 			largest_block_map = dict()
 			chromosomes = set(chromosome for chromosome,phaseset in block_sizes.keys())
@@ -137,7 +179,7 @@ def run_split(
 				fields = line.split()
 				assert len(fields) == 4, 'Error parsing input file "{}"'.format(list_file)
 				readname, haplotype_name, phaseset, chromosome = fields
-				haplotype_int = HAPLOTYPE_TO_INT[haplotype_name]
+				haplotype_int = haplotype_to_int[haplotype_name]
 				if only_largest_block:
 					if (haplotype_int != 0) and (largest_block_map[chromosome] != phaseset):
 						tags_removed += 1
