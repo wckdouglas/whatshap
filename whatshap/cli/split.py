@@ -52,25 +52,41 @@ def validate(args, parser):
 		parser.error('Nothing to be done since neither --output-h1 nor --output-h2 nor --output-untagged are given.')
 
 
-def open_possibly_gzipped(filename, readwrite='r', pigz=False):
+def open_possibly_gzipped(filename, exit_stack, readwrite='r', pigz=False):
+	"""
+	TODO: this should be simplified after the the utils::detect_file_format
+	function has been extended for more file formats
+
+	TODO: the implicit dependency to the external tool pigz for faster I/O
+	should be replaced with proper multi-threaded and buffered writers
+	for the FASTQ output
+
+	:param filename:
+	:param exit_stack:
+	:param readwrite:
+	:param pigz:
+	:return:
+	"""
 	if filename is None:
-		return None
-	if readwrite == 'r':
+		# not sure why this is necessary - keep for the time being
+		requested_file = None
+	elif readwrite == 'r':
 		if filename.endswith('.gz'):
-			return gzip.open(filename, 'rt')
+			requested_file = exit_stack.enter_context(gzip.open(filename, 'rt'))
 		else:
-			return open(filename)
+			requested_file = exit_stack.enter_context(open(filename, 'r'))
 	elif readwrite == 'w':
 		if filename.endswith('.gz'):
 			if pigz:
 				g = Popen(['pigz'], stdout=open(filename, 'w'), stdin=PIPE)
-				return g.stdin
+				requested_file = g.stdin
 			else:
-				return gzip.open(filename, 'w')
+				requested_file = exit_stack.enter_context(gzip.open(filename, 'w'))
 		else:
-			return open(filename, 'wb')
+			requested_file = exit_stack.enter_context(open(filename, 'wb'))
 	else:
-		assert False, 'Invalid open mode'
+		raise ValueError('Invalid file open mode (must be "r" or "w"): {}'.format(readwrite))
+	return requested_file
 
 
 def read_fastq(filename):
@@ -87,7 +103,7 @@ def read_fastq(filename):
 		yield name, record
 
 
-def check_haplotag_list_information(haplotag_list):
+def check_haplotag_list_information(haplotag_list, exit_stack):
 	"""
 	Check if the haplotag list file has at least 4 columns
 	(assumed to be read name, haplotype, phaseset, chromosome),
@@ -95,10 +111,14 @@ def check_haplotag_list_information(haplotag_list):
 	is not tab-separated
 
 	:param haplotag_list: Tab-separated file with at least 2 or 4 columns
+	:param exit_stack:
 	:return:
 	"""
-	open_file = open_possibly_gzipped(haplotag_list)
-	first_line = open_file.readline().strip()
+	haplo_list = open_possibly_gzipped(haplotag_list, exit_stack)
+	first_line = haplo_list.readline().strip()
+	# rewind to make sure a header-less file is processed correctly
+	haplo_list.seek(0)
+	has_chrom_info = False
 	try:
 		_, _, _, _ = first_line.split('\t')[:4]
 	except ValueError:
@@ -107,10 +127,9 @@ def check_haplotag_list_information(haplotag_list):
 		except ValueError:
 			raise ValueError('First line of haplotag list file does not have '
 							'at least 2 columns, or it is not tab-separated: {}'.format(first_line))
-		else:
-			return False
 	else:
-		return True
+		has_chrom_info = True
+	return haplo_list, has_chrom_info
 
 
 def run_split(
@@ -134,7 +153,7 @@ def run_split(
 	with ExitStack() as stack:
 		timers.start('split-init')
 
-		has_haplo_chrom_info = check_haplotag_list_information(list_file)
+		haplo_list, has_haplo_chrom_info = check_haplotag_list_information(list_file, stack)
 
 		if only_largest_block:
 			logger.debug('User selected "--only-largest-block", this requires chromosome '
@@ -147,17 +166,17 @@ def run_split(
 		largest_block_map = None
 		if only_largest_block:
 			# do one first pass and determine largest blocks
-			with open_possibly_gzipped(list_file) as f:
-				block_sizes = defaultdict(int)
-				logger.info('Reading %s to determine block sizes', list_file)
-				for line in f:
-					if line.startswith('#'):
-						continue
-					fields = line.split()
-					assert len(fields) == 4, 'Error parsing input file "{}"'.format(list_file)
-					readname, haplotype_name, phaseset, chromosome = fields
-					if haplotype_to_int[haplotype_name] != 0:
-						block_sizes[(chromosome,phaseset)] += 1
+			f = open_possibly_gzipped(list_file, stack)
+			block_sizes = defaultdict(int)
+			logger.info('Reading %s to determine block sizes', list_file)
+			for line in f:
+				if line.startswith('#'):
+					continue
+				fields = line.split()
+				assert len(fields) == 4, 'Error parsing input file "{}"'.format(list_file)
+				readname, haplotype_name, phaseset, chromosome = fields
+				if haplotype_to_int[haplotype_name] != 0:
+					block_sizes[(chromosome,phaseset)] += 1
 			largest_block_map = dict()
 			chromosomes = set(chromosome for chromosome,phaseset in block_sizes.keys())
 			logger.info('Largest blocks per chromosome:')
@@ -171,22 +190,22 @@ def run_split(
 		haplotype = defaultdict(int)
 		tags_removed = 0
 		assigned_to_haplotype = 0
-		with open_possibly_gzipped(list_file) as f:
-			logger.info('Reading %s', list_file)
-			for line in f:
-				if line.startswith('#'):
-					continue
-				fields = line.split()
-				assert len(fields) == 4, 'Error parsing input file "{}"'.format(list_file)
-				readname, haplotype_name, phaseset, chromosome = fields
-				haplotype_int = haplotype_to_int[haplotype_name]
-				if only_largest_block:
-					if (haplotype_int != 0) and (largest_block_map[chromosome] != phaseset):
-						tags_removed += 1
-						haplotype_int = 0
-				haplotype[readname] = haplotype_int
-				if haplotype_int != 0:
-					assigned_to_haplotype += 1
+		f = open_possibly_gzipped(list_file, stack)
+		logger.info('Reading %s', list_file)
+		for line in f:
+			if line.startswith('#'):
+				continue
+			fields = line.split()
+			assert len(fields) == 4, 'Error parsing input file "{}"'.format(list_file)
+			readname, haplotype_name, phaseset, chromosome = fields
+			haplotype_int = haplotype_to_int[haplotype_name]
+			if only_largest_block:
+				if (haplotype_int != 0) and (largest_block_map[chromosome] != phaseset):
+					tags_removed += 1
+					haplotype_int = 0
+			haplotype[readname] = haplotype_int
+			if haplotype_int != 0:
+				assigned_to_haplotype += 1
 		logger.info('... read %d records:', len(haplotype))
 		logger.info('...   %d reads are assigned to a haplotype.', assigned_to_haplotype)
 		if only_largest_block:
@@ -233,9 +252,9 @@ def run_split(
 						output_untagged_file.write(record)
 
 		else:
-			output_h1_file = open_possibly_gzipped(output_h1, 'w', pigz)
-			output_h2_file = open_possibly_gzipped(output_h2, 'w', pigz)
-			output_untagged_file = open_possibly_gzipped(output_untagged, 'w', pigz)
+			output_h1_file = open_possibly_gzipped(output_h1, stack, 'w', pigz)
+			output_h2_file = open_possibly_gzipped(output_h2, stack, 'w', pigz)
+			output_untagged_file = open_possibly_gzipped(output_untagged, stack, 'w', pigz)
 
 			for name, record in read_fastq(reads_file):
 				n_reads += 1
