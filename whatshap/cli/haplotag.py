@@ -486,7 +486,7 @@ def prepare_output_files(aln_output, reference, haplotag_output, vcf_md5, bam_he
 	logger.debug('Writing header line to haplotag list output file')
 	_ = haplotag_writer.write(
 		'\t'.join(
-			['#readname', 'haplotype', 'phaseset']
+			['#readname', 'haplotype', 'phaseset', 'chromosome']
 		) + '\n')
 
 	return bam_writer, haplotag_writer
@@ -647,10 +647,11 @@ def run_haplotag(
 					bam_writer.write(alignment)
 					if not (alignment.is_secondary or alignment.is_supplementary):
 						_ = haplotag_writer.write(
-							'{}\t{}\t{}\n'.format(
+							'{}\t{}\t{}\t{}\n'.format(
 								alignment.query_name,
 								haplotype_name,
-								phaseset
+								phaseset,
+								chrom
 							)
 						)
 
