@@ -6,14 +6,16 @@ whatshap haplotag --output-haplotag-list). Outputs one FASTQ/BAM per haplotype.
 BAM mode is intended for unmapped BAMs (such as provided by PacBio).
 """
 import logging
+import os
 import sys
 import gzip
 import pysam
 from collections import defaultdict, Counter
 from subprocess import Popen, PIPE
+import itertools
 
 from contextlib import ExitStack
-from whatshap import __version__
+from whatshap.utils import detect_file_format
 from whatshap.timer import StageTimer
 
 logger = logging.getLogger(__name__)
@@ -86,7 +88,7 @@ def open_possibly_gzipped(filename, exit_stack, readwrite='r', pigz=False):
 		if filename.endswith('.gz'):
 			if pigz:
 				g = Popen(['pigz'], stdout=open(filename, 'w'), stdin=PIPE)
-				requested_file = g.stdin
+				requested_file = exit_stack.enter_context(g.stdin)
 			else:
 				requested_file = exit_stack.enter_context(gzip.open(filename, 'w'))
 		else:
@@ -94,20 +96,6 @@ def open_possibly_gzipped(filename, exit_stack, readwrite='r', pigz=False):
 	else:
 		raise ValueError('Invalid file open mode (must be "r" or "w"): {}'.format(readwrite))
 	return requested_file
-
-
-def read_fastq(filename):
-	'''Yields pairs (readname, record) where record is a list of four lines.'''
-	f = open_possibly_gzipped(filename)
-	n = 0
-	while True:
-		record = [ f.readline() for _ in range(4) ]
-		if record[3] == '':
-			break
-		assert record[0].startswith('@'), record
-		assert record[2].startswith('+'), record
-		name = record[0][1:].split()[0]
-		yield name, record
 
 
 def select_reads_in_largest_phased_blocks(block_sizes, block_to_readnames):
@@ -130,16 +118,15 @@ def select_reads_in_largest_phased_blocks(block_sizes, block_to_readnames):
 	return selected_reads
 
 
-def process_haplotag_list_file(haplolist, line_parser, only_largest_blocks, discard_unknown_reads):
+def process_haplotag_list_file(haplolist, line_parser, haplotype_to_int, only_largest_blocks, discard_unknown_reads):
 	"""
 	:param haplolist:
 	:param line_parser:
+	:param haplotype_to_int:
 	:param only_largest_blocks:
 	:param discard_unknown_reads:
 	:return:
 	"""
-	# TODO: obviously this won't work for more than two haplotypes
-	haplotype_to_int = {'none': 0, 'H1': 1, 'H2': 2}
 
 	is_header = haplolist.readline().startswith('#')
 	if not is_header:
@@ -162,7 +149,14 @@ def process_haplotag_list_file(haplolist, line_parser, only_largest_blocks, disc
 	for line in haplolist:
 		readname, haplo_name, phaseset, chromosome = line_parser(line)
 		total_reads += 1
-		haplo_num = haplotype_to_int[haplo_name]
+		try:
+			haplo_num = haplotype_to_int[haplo_name]
+		except KeyError:
+			logger.error('Mapping the haplotype name to the corresponding haplotype '
+						'number failed. Currently, the haplotype name in the haplotag '
+						'list file has to be one of: none, H1, H2. The value that triggered '
+						'the error was: {}'.format(haplo_name))
+			raise
 		if haplo_num == 0:
 			if discard_unknown_reads:
 				known_reads.add(readname)
@@ -212,6 +206,24 @@ def _four_column_parser(line):
 	return line.strip().split('\t')[:4]
 
 
+def _bam_iterator(bam_file):
+	"""
+	:param bam_file:
+	:return:
+	"""
+	for record in bam_file:
+		yield record.query_name, len(record.query_sequence), record
+
+
+def _fastq_iterator(fastq_file):
+	"""
+	:param fastq_file:
+	:return:
+	"""
+	for record in fastq_file:
+		yield record.name, len(record.sequence), record
+
+
 def check_haplotag_list_information(haplotag_list, exit_stack):
 	"""
 	Check if the haplotag list file has at least 4 columns
@@ -243,6 +255,112 @@ def check_haplotag_list_information(haplotag_list, exit_stack):
 	return haplo_list, has_chrom_info, line_parser
 
 
+def initialize_io_files(reads_file, output_h1, output_h2, output_untagged, use_pigz, exit_stack):
+	"""
+	:param reads_file:
+	:param output_h1:
+	:param output_h2:
+	:param output_untagged:
+	:param use_pigz:
+	:param exit_stack:
+	:return:
+	"""
+	potential_fastq_extensions = [
+		'fastq',
+		'fastq.gz',
+		'fastq.gzip'
+		'fq',
+		'fq.gz'
+		'fq.gzip'
+	]
+	input_format = detect_file_format(reads_file)
+	if input_format is None:
+		# TODO: this is a heuristic, need to extend utils::detect_file_format
+		if any([reads_file.endswith(ext) for ext in potential_fastq_extensions]):
+			input_format = 'FASTQ'
+		else:
+			raise ValueError('Undetected file format for input reads. '
+							'Expecting BAM or FASTQ (gzipped): {}'.format(reads_file))
+	elif input_format == 'BAM':
+		pass
+	elif input_format in ['VCF', 'CRAM']:
+		raise ValueError('Input file format detected as: {} '
+						'Currently, only BAM and FASTQ is supported.')
+	else:
+		# this means somebody changed utils::detect_file_format w/o
+		# checking for usage throughout the code
+		raise ValueError('Unexpected file format for input reads: {} - '
+						'Expecting BAM or FASTQ (gzipped)'.format(input_format))
+
+	if input_format == 'BAM':
+		input_reader = exit_stack.enter_context(
+			pysam.AlignmentFile(
+				reads_file,
+				mode="rb",
+				check_sq=False  # I guess this is needed for unaligned PacBio native files
+			)
+		)
+		input_iter = _bam_iterator
+		output_writers = dict()
+		for hap, outfile in zip([0, 1, 2], [output_untagged, output_h1, output_h2]):
+			output_writers[hap] = exit_stack.enter_context(
+				pysam.AlignmentFile(
+					os.devnull if outfile is None else outfile,
+					mode="wb",
+					template=input_reader,
+				)
+			)
+
+	elif input_format == 'FASTQ':
+		# raw or gzipped is both handled by PySam
+		input_reader = exit_stack.enter_context(pysam.FastxFile(reads_file))
+		input_mode = "wb"
+		if not (reads_file.endswith('.gz') or reads_file.endswith('.gzip')):
+			input_mode = "w"
+		input_iter = _fastq_iterator
+		output_writers = dict()
+		for hap, outfile in zip([0, 1, 2], [output_untagged, output_h1, output_h2]):
+			# TODO jump through a hoop here to not break pigz feature; should be
+			# changed to WhatsHap-internal features
+			open_handle = open_possibly_gzipped(outfile, exit_stack, "w", use_pigz)
+			if open_handle is None:
+				open_handle = open(os.devnull, input_mode)
+			output_writers[hap] = exit_stack.enter_context(
+				pysam.FastxFile(open_handle)
+				)
+	else:
+		# and this means I overlooked something...
+		raise ValueError('Unhandled file format for input reads: {}'.format(input_format))
+	return input_reader, input_iter, output_writers
+
+
+def write_read_length_histogram(length_counts, histogram_file, exit_stack):
+	"""
+	:param length_counts:
+	:param histogram_file:
+	:param exit_stack:
+	:return:
+	"""
+	h1 = length_counts[1]
+	h2 = length_counts[2]
+	untag = length_counts[0]
+	all_read_lengths = sorted(
+		itertools.chain(
+			*(h1.keys(), h2.keys(), untag.keys())
+		)
+	)
+	tsv_file = open_possibly_gzipped(histogram_file, exit_stack, "w")
+	_ = tsv_file.write('\t'.join(['#length', 'count-untagged', 'count-h1', 'count-h2']) + '\n')
+
+	line = '{}\t{}\t{}\t{}'
+
+	out_lines = [line.format(rlen, untag[rlen], h1[rlen], h2[rlen]) for rlen in all_read_lengths]
+
+	_ = tsv_file.write('\n'.join(out_lines))
+
+	return
+
+
 def run_split(
 		reads_file,
 		list_file,
@@ -262,7 +380,12 @@ def run_split(
 	with ExitStack() as stack:
 		timers.start('split-init')
 
-		haplo_list, has_haplo_chrom_info, line_parser = check_haplotag_list_information(list_file, stack)
+		# TODO: obviously this won't work for more than two haplotypes
+		haplotype_to_int = {'none': 0, 'H1': 1, 'H2': 2}
+
+		haplo_list, has_haplo_chrom_info, line_parser = check_haplotag_list_information(
+			list_file,
+			stack)
 
 		if only_largest_block:
 			logger.debug('User selected "--only-largest-block", this requires chromosome '
@@ -272,99 +395,110 @@ def run_split(
 								'information, which is required to select only reads from the '
 								'largest phased block. Columns 3 and 4 are missing.')
 
+		timers.start('split-process-haplotag-list')
+
 		readname_to_haplotype, known_reads = process_haplotag_list_file(
 			haplo_list,
 			line_parser,
+			haplotype_to_int,
 			only_largest_block,
 			discard_unknown_reads
 		)
-
-		output_h1_file = None
-		output_h2_file = None
-		output_untagged_file = None
-
-		read_lengths_histogram_dict = dict()
-
-		n_reads = 0
-		# TODO: Avoid code duplication in the two code blocks
-		# TODO: Detect file type in a smarter way, not based on ending
-		if reads_file.endswith('.bam'):
-			bamreader = pysam.AlignmentFile(reads_file, mode='rb', check_sq=False)
-			if output_h1 is not None:
-				output_h1_file = pysam.AlignmentFile(output_h1, 'wb', template=bamreader)
-			if output_h2 is not None:
-				output_h2_file = pysam.AlignmentFile(output_h2, 'wb', template=bamreader)
-			if output_untagged is not None:
-				output_untagged_file = pysam.AlignmentFile(output_untagged, 'wb', template=bamreader)
-
-			for record in bamreader:
-				n_reads += 1
-				h = readname_to_haplotype[record.query_name]
-
-				if read_lengths_histogram is not None:
-					read_length = len(record.query_sequence)
-					if read_length not in read_lengths_histogram_dict:
-						read_lengths_histogram_dict[read_length] = [0,0,0]
-					read_lengths_histogram_dict[read_length][h] += 1
-
-				if output_h1_file is not None:
-					if (h==1) or (h==0 and add_untagged):
-						output_h1_file.write(record)
-
-				if output_h2_file is not None:
-					if (h==2) or (h==0 and add_untagged):
-						output_h2_file.write(record)
-
-				if output_untagged_file is not None:
-					if h==0:
-						output_untagged_file.write(record)
-
+		if discard_unknown_reads:
+			logger.debug('User selected to discard unknown reads, i.e., ignore all reads '
+						'that are not part of the haplotag list input file.')
+			assert len(known_reads) > 0, \
+				'No known reads in input set - would discard everything, this is probably wrong'
+			missing_reads = len(known_reads)
 		else:
-			output_h1_file = open_possibly_gzipped(output_h1, stack, 'w', pigz)
-			output_h2_file = open_possibly_gzipped(output_h2, stack, 'w', pigz)
-			output_untagged_file = open_possibly_gzipped(output_untagged, stack, 'w', pigz)
+			missing_reads = -1
 
-			for name, record in read_fastq(reads_file):
-				n_reads += 1
-				h = readname_to_haplotype[name]
+		timers.stop('split-process-haplotag-list')
 
-				if read_lengths_histogram is not None:
-					read_length = len(record[1].strip())
-					if read_length not in read_lengths_histogram_dict:
-						read_lengths_histogram_dict[read_length] = [0,0,0]
-					read_lengths_histogram_dict[read_length][h] += 1
+		input_reader, input_iterator, output_writers = initialize_io_files(
+			reads_file,
+			output_h1,
+			output_h2,
+			output_untagged,
+			pigz,
+			stack,
+		)
 
-				if output_h1_file is not None:
-					if (h==1) or (h==0 and add_untagged):
-						for line in record:
-							output_h1_file.write(line.encode('utf-8'))
+		timers.stop('split-init')
 
-				if output_h2_file is not None:
-					if (h==2) or (h==0 and add_untagged):
-						for line in record:
-							output_h2_file.write(line.encode('utf-8'))
+		histogram_data = {
+			0: Counter(),
+			1: Counter(),
+			2: Counter(),
+		}
 
-				if output_untagged_file is not None:
-					if h==0:
-						for line in record:
-							output_untagged_file.write(line.encode('utf-8'))
+		# holds count statistics about total processed reads etc.
+		read_counter = Counter()
+
+		process_haplotype = {
+			0: output_untagged is not None or add_untagged,
+			1: output_h1 is not None,
+			2: output_h2 is not None
+		}
+
+		timers.start('split-iter-input')
+
+		for read_name, read_length, record in input_iterator(input_reader):
+			read_counter['total_reads'] += 1
+			if discard_unknown_reads and read_name not in known_reads:
+				read_counter['unknown_reads'] += 1
+				continue
+			read_haplotype = readname_to_haplotype[read_name]
+			if not process_haplotype[read_haplotype]:
+				read_counter['skipped_reads'] += 1
+				continue
+			histogram_data[read_haplotype][read_length] += 1
+			read_counter[read_haplotype] += 1
+
+			output_writers[read_haplotype].write(record)
+			if read_haplotype == 0 and add_untagged:
+				output_writers[1].write(record)
+				output_writers[2].write(record)
+
+			if discard_unknown_reads:
+				if missing_reads == 0:
+					logger.info('All known reads processed - cancel processing...')
+					break
+				else:
+					missing_reads -= 1
+
+		timers.stop('split-iter-input')
 
 		if read_lengths_histogram is not None:
-			with open(read_lengths_histogram, 'wt') as t:
-				print('#length', 'count-untagged', 'count-h1', 'count-h2', sep='\t', file=t)
-				for length in sorted(read_lengths_histogram_dict.keys()):
-					print(length, *(read_lengths_histogram_dict[length]), sep='\t', file=t)
-				t.close()
+			timers.start('split-length-histogram')
+			write_read_length_histogram(histogram_data, read_lengths_histogram, stack)
+			timers.stop('split-length-histogram')
 
-		if output_h1_file is not None:
-			output_h1_file.close()
-		if output_h2_file is not None:
-			output_h2_file.close()
-		if output_untagged_file is not None:
-			output_untagged_file.close()
+	timers.stop('split-run')
 
 	logger.info('\n== SUMMARY ==')
-	logger.info('Total reads processed:              %12d', n_reads)
+	logger.info('Total reads processed: {}'.format(read_counter['total_reads']))
+	logger.info('Number of output reads "untagged": {}'.format(read_counter[0]))
+	logger.info('Number of output reads haplotype 1: {}'.format(read_counter[1]))
+	logger.info('Number of output reads haplotype 2: {}'.format(read_counter[2]))
+	logger.info('Number of unknown (dropped) reads: {}'.format(read_counter['unknown_reads']))
+	logger.info('Number of skipped reads (per user request): {}'.format(read_counter['skipped_reads']))
+
+	logger.info('Time for processing haplotag list: {} sec'.format(
+		round(timers.elapsed('split-process-haplotag-list'), 3)))
+
+	logger.info('Time for total initial setup: {} sec'.format(
+		round(timers.elapsed('split-init'), 3)))
+
+	logger.info('Time for iterating input reads: {} sec'.format(
+		round(timers.elapsed('split-iter-input'), 3)))
+
+	if read_lengths_histogram is not None:
+		logger.info('Time for creating histogram output: {} sec'.format(
+			round(timers.elapsed('split-length-histogram'), 3)))
+
+	logger.info('Total run time: {} sec'.format(
+		round(timers.elapsed('split-run'), 3)))
 
 
 def main(args):
