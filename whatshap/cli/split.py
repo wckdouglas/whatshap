@@ -502,4 +502,10 @@ def run_split(
 
 
 def main(args):
-	run_split(**vars(args))
+	try:
+		run_split(**vars(args))
+	except Exception as e:
+		logger.error('WhatsHap::split error: {}'.format(e))
+		sys.exit(1)
+	else:
+		sys.exit(0)
