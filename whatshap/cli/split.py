@@ -90,9 +90,9 @@ def open_possibly_gzipped(filename, exit_stack, readwrite='r', pigz=False):
 				g = Popen(['pigz'], stdout=open(filename, 'w'), stdin=PIPE)
 				requested_file = exit_stack.enter_context(g.stdin)
 			else:
-				requested_file = exit_stack.enter_context(gzip.open(filename, 'w'))
+				requested_file = exit_stack.enter_context(gzip.open(filename, 'wt'))
 		else:
-			requested_file = exit_stack.enter_context(open(filename, 'wb'))
+			requested_file = exit_stack.enter_context(open(filename, 'w'))
 	else:
 		raise ValueError('Invalid file open mode (must be "r" or "w"): {}'.format(readwrite))
 	return requested_file
@@ -215,13 +215,28 @@ def _bam_iterator(bam_file):
 		yield record.query_name, len(record.query_sequence), record
 
 
-def _fastq_iterator(fastq_file):
+def _fastq_string_iterator(fastq_file):
 	"""
+	Explicit casting to string because pysam does not seem to
+	have a writer for FASTQ files - note that this relies
+	on opening all compressed files in "text" mode
+	(see open_possibly_gzipped)
+
 	:param fastq_file:
 	:return:
 	"""
 	for record in fastq_file:
-		yield record.name, len(record.sequence), record
+		yield record.name, len(record.sequence), str(record) + '\n'
+
+
+def _fastq_binary_iterator(fastq_file):
+	"""
+	This one just exists for the pigz dependency
+	:param fastq_file:
+	:return:
+	"""
+	for record in fastq_file:
+		yield record.name, len(record.sequence), (str(record) + '\n').encode('utf-8')
 
 
 def check_haplotag_list_information(haplotag_list, exit_stack):
@@ -317,17 +332,18 @@ def initialize_io_files(reads_file, output_h1, output_h2, output_untagged, use_p
 		input_mode = "wb"
 		if not (reads_file.endswith('.gz') or reads_file.endswith('.gzip')):
 			input_mode = "w"
-		input_iter = _fastq_iterator
+		if use_pigz:
+			input_iter = _fastq_binary_iterator
+		else:
+			input_iter = _fastq_string_iterator
 		output_writers = dict()
 		for hap, outfile in zip([0, 1, 2], [output_untagged, output_h1, output_h2]):
 			# TODO jump through a hoop here to not break pigz feature; should be
 			# changed to WhatsHap-internal features
 			open_handle = open_possibly_gzipped(outfile, exit_stack, "w", use_pigz)
 			if open_handle is None:
-				open_handle = open(os.devnull, input_mode)
-			output_writers[hap] = exit_stack.enter_context(
-				pysam.FastxFile(open_handle)
-				)
+				open_handle = exit_stack.enter_context(open(os.devnull, input_mode))
+			output_writers[hap] = open_handle
 	else:
 		# and this means I overlooked something...
 		raise ValueError('Unhandled file format for input reads: {}'.format(input_format))
@@ -349,7 +365,7 @@ def write_read_length_histogram(length_counts, histogram_file, exit_stack):
 			*(h1.keys(), h2.keys(), untag.keys())
 		)
 	)
-	tsv_file = open_possibly_gzipped(histogram_file, exit_stack, "w")
+	tsv_file = open_possibly_gzipped(histogram_file, exit_stack, "w", pigz=False)
 	_ = tsv_file.write('\t'.join(['#length', 'count-untagged', 'count-h1', 'count-h2']) + '\n')
 
 	line = '{}\t{}\t{}\t{}'
@@ -501,10 +517,4 @@ def run_split(
 
 
 def main(args):
-	try:
-		run_split(**vars(args))
-	except Exception as e:
-		logger.error('WhatsHap::split error: {}'.format(e))
-		sys.exit(1)
-	else:
-		sys.exit(0)
+	run_split(**vars(args))
