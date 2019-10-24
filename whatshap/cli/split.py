@@ -461,11 +461,10 @@ def run_split(
 				output_writers[2].write(record)
 
 			if discard_unknown_reads:
+				missing_reads -= 1
 				if missing_reads == 0:
 					logger.info('All known reads processed - cancel processing...')
 					break
-				else:
-					missing_reads -= 1
 
 		timers.stop('split-iter-input')
 
