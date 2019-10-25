@@ -76,7 +76,7 @@ def open_possibly_gzipped(filename, exit_stack, readwrite='r', pigz=False):
 	:return:
 	"""
 	if filename is None:
-		# not sure why this is necessary - keep for the time being
+		# this case is used in initialize_io_files
 		requested_file = None
 	elif readwrite == 'r':
 		if filename.endswith('.gz'):
