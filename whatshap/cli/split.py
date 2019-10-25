@@ -7,7 +7,6 @@ BAM mode is intended for unmapped BAMs (such as provided by PacBio).
 """
 import logging
 import os
-import sys
 import gzip
 import pysam
 from collections import defaultdict, Counter
