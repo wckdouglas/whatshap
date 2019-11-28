@@ -55,6 +55,7 @@ def add_arguments(parser):
 	arg('--tag-supplementary', default=False, action='store_true', 
 		help='Also tag supplementary alignments. Supplementary alignments are assigned to the same '
 			'haplotype the primary alignment has been assigned to (default: only tag primary alignments).')
+	arg('--ploidy', metavar='PLOIDY', default=2, type=int, help='Ploidy (default: %(default)s)' )
 	arg('variant_file', metavar='VCF', help='VCF file with phased variants (must be gzip-compressed and indexed)')
 	arg('alignment_file', metavar='ALIGNMENTS',
 		help='File (BAM/CRAM) with read alignments to be tagged by haplotype')
@@ -100,8 +101,8 @@ def get_variant_information(variant_table, sample):
 	for idx, (v, gt) in enumerate(zip(variant_table.variants, genotypes)):
 		if phases[idx] is None:
 			continue
-		# assuming ploidy = 2
-		phase_info = int(phases[idx].block_id), phases[idx].phase[0]
+		# map block_id to tuple of phases
+		phase_info = int(phases[idx].block_id), phases[idx].phase
 		vpos_to_phase_info[v.position] = phase_info
 		if not gt.is_homozygous():
 			variants.append(v)
@@ -165,7 +166,8 @@ def load_chromosome_variants(vcf_reader, chromosome, regions):
 
 def prepare_haplotag_information(variant_table, shared_samples, readset_reader,
 								fasta, regions, ignore_read_groups, ignore_linked_read,
-								linked_read_cutoff):
+								linked_read_cutoff,
+								ploidy):
 	"""
 	Read all reads for this chromosome once to create one core.ReadSet per sample
 	this allows to assign phase to paired-end reads based on both reads
@@ -178,6 +180,7 @@ def prepare_haplotag_information(variant_table, shared_samples, readset_reader,
 	:param ignore_read_groups:
 	:param ignore_linked_read:
 	:param linked_read_cutoff:
+	:param ploidy
 	:return:
 	"""
 	n_multiple_phase_sets = 0
@@ -200,8 +203,8 @@ def prepare_haplotag_information(variant_table, shared_samples, readset_reader,
 		for read in read_set:
 			if read.name in processed_reads:
 				continue
-			# mapping: phaseset --> phred scaled difference between costs of assigning reads to haplotype 0 or 1
-			haplotype_costs = collections.defaultdict(int)
+			# mapping: phaseset --> costs of assigning reads to haplotypes
+			haplotype_costs = collections.defaultdict(lambda: [0]*ploidy)
 			reads_to_consider = set()
 
 			processed_reads.add(read.name)
@@ -218,31 +221,36 @@ def prepare_haplotag_information(variant_table, shared_samples, readset_reader,
 				processed_reads.add(r.name)
 				for v in r:
 					assert v.allele in [0, 1]
-					phaseset, allele = variantpos_to_phaseinfo[v.position]
-					if v.allele == allele:
-						haplotype_costs[phaseset] += v.quality
-					else:
-						haplotype_costs[phaseset] -= v.quality
-
+					phaseset, phasing = variantpos_to_phaseinfo[v.position]
+					for hap_index, hap_allele in enumerate(phasing):
+						if v.allele == hap_allele:
+							haplotype_costs[phaseset][hap_index] += v.quality
 			l = list(haplotype_costs.items())
-			l.sort(key=lambda t: -abs(t[1]))
-			# logger.info('Read %s: %s', read.name, str(l))
+			# sort by maximum quality score
+			l.sort(key=lambda t:max(t[1]), reverse=True)
 
 			if len(l) == 0:
 				continue
 			if len(l) > 1:
 				n_multiple_phase_sets += 1
-			phaseset, quality = l[0]
+			phaseset, scores = l[0]
+
+			# find best and second best haplotype scores for this phaseset
+			scores_list = [s for s in enumerate(scores)]
+			scores_list.sort(key=lambda t:t[1], reverse=True)
+			first_ht, first_score = scores_list[0]
+			second_ht, second_score = scores_list[1]
+			quality = first_score - second_score
+
 			if quality == 0:
 				continue
-			haplotype = 0 if quality > 0 else 1
-			BX_tag_to_haplotype[read.BX_tag].append((read.reference_start, haplotype, phaseset))
+			BX_tag_to_haplotype[r.BX_tag].append((read.reference_start, first_ht, phaseset))
 			for r in reads_to_consider:
-				read_to_haplotype[r.name] = (haplotype, abs(quality), phaseset)
+				read_to_haplotype[r.name] = (first_ht, quality, phaseset)
 				logger.debug(
 					'Assigned read {} to haplotype {} with a '
-					'quality of {} based on {} covered variants'.format(
-						r.name, haplotype, quality, len(r)
+					'quality of {} based on {} covered variants'. format(
+						r.name, first_ht, quality, len(r)
 					)
 				)
 	return BX_tag_to_haplotype, read_to_haplotype, n_multiple_phase_sets
@@ -345,19 +353,20 @@ def initialize_readset_reader(aln_file_path, ref_file_path, num_sample_ids, exit
 	return readset_reader, fasta
 
 
-def prepare_variant_file(file_path, user_given_samples, ignore_read_groups, exit_stack):
+def prepare_variant_file(file_path, user_given_samples, ploidy, ignore_read_groups, exit_stack):
 	"""
 	Open variant file and load sample information - check if samples in VCF are compatible
 	with user specified list of samples.
 
 	:param file_path:
 	:param user_given_samples:
+	:param ploidy
 	:param ignore_read_groups:
 	:param exit_stack:
 	:return: VCF reader object and set of VCF samples to use
 	"""
 	try:
-		vcf_reader = exit_stack.enter_context(VcfReader(file_path, indels=True, phases=True))
+		vcf_reader = exit_stack.enter_context(VcfReader(file_path, indels=True, phases=True, ploidy=ploidy))
 	except (IOError, OSError) as err:
 		logger.error('Error while loading variant file {}: {}'.format(file_path, err))
 		raise err
@@ -539,6 +548,7 @@ def run_haplotag(
 		ignore_read_groups=False,
 		haplotag_list=None,
 		tag_supplementary=False,
+		ploidy=2
 	):
 
 	timers = StageTimer()
@@ -553,6 +563,7 @@ def run_haplotag(
 		vcf_reader, use_vcf_samples = prepare_variant_file(
 			variant_file,
 			given_samples,
+			ploidy,
 			ignore_read_groups,
 			stack
 		)
@@ -604,6 +615,7 @@ def run_haplotag(
 			if variant_table is not None:
 				logger.debug('Preparing haplotype information')
 
+				# TODO: extend prepare_haplotag_information to polyploids!
 				BX_tag_to_haplotype, read_to_haplotype, n_mult = prepare_haplotag_information(
 					variant_table,
 					shared_samples,
@@ -612,7 +624,8 @@ def run_haplotag(
 					regions,
 					ignore_read_groups,
 					ignore_linked_read,
-					linked_read_distance_cutoff
+					linked_read_distance_cutoff,
+					ploidy
 				)
 
 				n_multiple_phase_sets += n_mult
