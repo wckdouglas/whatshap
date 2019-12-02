@@ -777,11 +777,14 @@ def test_haplotag_no_readgroups1():
 		# run haplotag with/without --ignore-read-groups, results should be identical since files contain only data for one sample
 		run_haplotag(variant_file='tests/data/haplotag_1.vcf.gz', alignment_file='tests/data/haplotag.bam', output=outbam1)
 		run_haplotag(variant_file='tests/data/haplotag_1.vcf.gz', alignment_file='tests/data/haplotag_noRG.bam', output=outbam2, ignore_read_groups=True)
+		count = 0
 		for a1, a2 in zip(pysam.AlignmentFile(outbam1), pysam.AlignmentFile(outbam2)):
 			assert a1.query_name == a2.query_name
 			if a1.has_tag('HP'):
 				assert a2.has_tag('HP')
 				assert a1.get_tag('HP') == a2.get_tag('HP')
+				count += 1
+		assert count > 0
 
 
 def test_haplotag_no_readgroups2():
@@ -813,11 +816,14 @@ def haplotag_different_sorting():
 		# both VCFs contain the same positions, but chromosomes are sorted differently
 		run_haplotag(variant_file='tests/data/haplotag.large.vcf.gz', alignment_file='tests/data/haplotag.large.bam', output=outbam1)
 		run_haplotag(variant_file='tests/data/haplotag.large.2.vcf.gz', alignment_file='tests/data/haplotag.large.bam', output=outbam2)
+		count = 0
 		for a1, a2 in zip(pysam.AlignmentFile(outbam1), pysam.AlignmentFile(outbam2)):
 			assert a1.query_name == a2.query_name
 			if a1.has_tag('HP'):
 				assert a2.has_tag('HP')
 				assert a1.get_tag('HP') == a2.get_tag('HP')
+				count += 1
+		assert count > 0
 
 
 def test_haplotag_10X():
@@ -840,10 +846,13 @@ def test_haplotag_10X_2():
 	with TemporaryDirectory() as tempdir:
 		outbam = tempdir + '/output.bam'
 		run_haplotag(variant_file='tests/data/haplotag.10X_2.vcf.gz', alignment_file='tests/data/haplotag.10X.bam', output=outbam)
+		count = 0
 		for a1, a2 in zip(pysam.AlignmentFile('tests/data/haplotag.10X.bam'), pysam.AlignmentFile(outbam)):
 			assert a1.query_name == a2.query_name
 			if a1.has_tag('HP') and a2.has_tag('HP'):
 				assert a1.get_tag('HP') == a2.get_tag('HP')
+				count += 1
+		assert count > 0
 
 
 def test_haplotag_supplementary():
