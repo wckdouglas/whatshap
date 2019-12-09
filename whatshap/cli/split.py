@@ -28,11 +28,17 @@ def add_arguments(parser):
 	arg('--output-h2', default=None,
 		help='Output file to write reads from Haplotype 2 to. Use ending .gz to '
 		'create gzipped file.')
+	arg('--output-h3', default=None,
+		help='Output file to write reads from Haplotype 3 to. Use ending .gz to '
+		'create gzipped file.')
+	arg('--output-h4', default=None,
+		help='Output file to write reads from Haplotype 4 to. Use ending .gz to '
+		'create gzipped file.')
 	arg('--output-untagged', default=None,
 		help='Output file to write untagged reads to. Use ending .gz to '
 		'create gzipped file.')
 	arg('--add-untagged', default=False, action='store_true',
-		help='Add reads without tag to both H1 and H2 output streams.')
+		help='Add reads without tag to all output streams.')
 	arg('--pigz', default=False, action='store_true',
 		help='Use the pigz program for gzipping output.')
 	arg('--only-largest-block', default=False, action='store_true',
@@ -50,14 +56,14 @@ def add_arguments(parser):
 	arg('reads_file', metavar='READS', help='Input FASTQ/BAM file with reads (fastq can be gzipped)')
 	arg('list_file', metavar='LIST',
 		help='Tab-separated list with (at least) two columns <readname> and <haplotype> (can be gzipped). '
-			'Currently, the two haplotypes have to be named H1 and H2 (or none). Alternatively, the '
+			'Currently, the haplotypes have to be named H1, H2, H3 and H4 (or none). Alternatively, the '
 			'output of the "haplotag" command can be used (4 columns), and this is required for using '
 			'the "--only-largest-block" option (need phaseset and chromosome info).')
 
 
 def validate(args, parser):
-	if (args.output_h1 is None) and (args.output_h2 is None) and (args.output_untagged is None):
-		parser.error('Nothing to be done since neither --output-h1 nor --output-h2 nor --output-untagged are given.')
+	if (args.output_h1 is None) and (args.output_h2 is None) and (args.output_h3 is None) and (args.output_h4 is None) and (args.output_untagged is None):
+		parser.error('Nothing to be done since neither --output-h1 nor --output-h2 nor --output-h3 nor --output-h4 --output-untagged are given.')
 
 
 def open_possibly_gzipped(filename, exit_stack, readwrite='r', pigz=False):
@@ -153,7 +159,7 @@ def process_haplotag_list_file(haplolist, line_parser, haplotype_to_int, only_la
 		except KeyError:
 			logger.error('Mapping the haplotype name to the corresponding haplotype '
 						'number failed. Currently, the haplotype name in the haplotag '
-						'list file has to be one of: none, H1, H2. The value that triggered '
+						'list file has to be one of: none, H1, H2, H3, H4. The value that triggered '
 						'the error was: {}'.format(haplo_name))
 			raise
 		if haplo_num == 0:
@@ -269,11 +275,13 @@ def check_haplotag_list_information(haplotag_list, exit_stack):
 	return haplo_list, has_chrom_info, line_parser
 
 
-def initialize_io_files(reads_file, output_h1, output_h2, output_untagged, use_pigz, exit_stack):
+def initialize_io_files(reads_file, output_h1, output_h2, output_h3, output_h4, output_untagged, use_pigz, exit_stack):
 	"""
 	:param reads_file:
 	:param output_h1:
 	:param output_h2:
+	:param output_h3:
+	:param output_h4:
 	:param output_untagged:
 	:param use_pigz:
 	:param exit_stack:
@@ -316,7 +324,7 @@ def initialize_io_files(reads_file, output_h1, output_h2, output_untagged, use_p
 		)
 		input_iter = _bam_iterator
 		output_writers = dict()
-		for hap, outfile in zip([0, 1, 2], [output_untagged, output_h1, output_h2]):
+		for hap, outfile in zip([0, 1, 2, 3, 4], [output_untagged, output_h1, output_h2, output_h3, output_h4]):
 			output_writers[hap] = exit_stack.enter_context(
 				pysam.AlignmentFile(
 					os.devnull if outfile is None else outfile,
@@ -336,7 +344,7 @@ def initialize_io_files(reads_file, output_h1, output_h2, output_untagged, use_p
 		else:
 			input_iter = _fastq_string_iterator
 		output_writers = dict()
-		for hap, outfile in zip([0, 1, 2], [output_untagged, output_h1, output_h2]):
+		for hap, outfile in zip([0, 1, 2, 3, 4], [output_untagged, output_h1, output_h2, output_h3, output_h4]):
 			# TODO jump through a hoop here to not break pigz feature; should be
 			# changed to WhatsHap-internal features
 			open_handle = open_possibly_gzipped(outfile, exit_stack, "w", use_pigz)
@@ -358,18 +366,20 @@ def write_read_length_histogram(length_counts, histogram_file, exit_stack):
 	"""
 	h1 = length_counts[1]
 	h2 = length_counts[2]
+	h3 = length_counts[3]
+	h4 = lenght_counts[4]
 	untag = length_counts[0]
 	all_read_lengths = sorted(
 		itertools.chain(
-			*(h1.keys(), h2.keys(), untag.keys())
+			*(h1.keys(), h2.keys(), h3.keys(), h4.keys(), untag.keys())
 		)
 	)
 	tsv_file = open_possibly_gzipped(histogram_file, exit_stack, "w", pigz=False)
-	_ = tsv_file.write('\t'.join(['#length', 'count-untagged', 'count-h1', 'count-h2']) + '\n')
+	_ = tsv_file.write('\t'.join(['#length', 'count-untagged', 'count-h1', 'count-h2', 'count-h3', 'count-h4']) + '\n')
 
-	line = '{}\t{}\t{}\t{}'
+	line = '{}\t{}\t{}\t{}\t{}\t{}'
 
-	out_lines = [line.format(rlen, untag[rlen], h1[rlen], h2[rlen]) for rlen in all_read_lengths]
+	out_lines = [line.format(rlen, untag[rlen], h1[rlen], h2[rlen], h3[rlen], h4[rlen]) for rlen in all_read_lengths]
 
 	_ = tsv_file.write('\n'.join(out_lines))
 
@@ -381,6 +391,8 @@ def run_split(
 		list_file,
 		output_h1=None,
 		output_h2=None,
+		output_h3=None,
+		output_h4=None,
 		output_untagged=None,
 		add_untagged=False,
 		pigz=False,
@@ -396,7 +408,7 @@ def run_split(
 		timers.start('split-init')
 
 		# TODO: obviously this won't work for more than two haplotypes
-		haplotype_to_int = {'none': 0, 'H1': 1, 'H2': 2}
+		haplotype_to_int = {'none': 0, 'H1': 1, 'H2': 2, 'H3': 3, 'H4': 4}
 
 		haplo_list, has_haplo_chrom_info, line_parser = check_haplotag_list_information(
 			list_file,
@@ -434,6 +446,8 @@ def run_split(
 			reads_file,
 			output_h1,
 			output_h2,
+			output_h3,
+			output_h4,
 			output_untagged,
 			pigz,
 			stack,
@@ -445,6 +459,8 @@ def run_split(
 			0: Counter(),
 			1: Counter(),
 			2: Counter(),
+			3: Counter(),
+			4: Counter()
 		}
 
 		# holds count statistics about total processed reads etc.
@@ -453,7 +469,9 @@ def run_split(
 		process_haplotype = {
 			0: output_untagged is not None or add_untagged,
 			1: output_h1 is not None,
-			2: output_h2 is not None
+			2: output_h2 is not None,
+			3: output_h3 is not None,
+			4: output_h4 is not None
 		}
 
 		timers.start('split-iter-input')
@@ -474,6 +492,8 @@ def run_split(
 			if read_haplotype == 0 and add_untagged:
 				output_writers[1].write(record)
 				output_writers[2].write(record)
+				output_writers[3].write(record)
+				output_writers[4].write(record)
 
 			if discard_unknown_reads:
 				missing_reads -= 1
@@ -495,6 +515,8 @@ def run_split(
 	logger.info('Number of output reads "untagged": {}'.format(read_counter[0]))
 	logger.info('Number of output reads haplotype 1: {}'.format(read_counter[1]))
 	logger.info('Number of output reads haplotype 2: {}'.format(read_counter[2]))
+	logger.info('Number of output reads haplotype 3: {}'.format(read_counter[3]))
+	logger.info('Number of output reads haplotype 4: {}'.format(read_counter[4]))
 	logger.info('Number of unknown (dropped) reads: {}'.format(read_counter['unknown_reads']))
 	logger.info('Number of skipped reads (per user request): {}'.format(read_counter['skipped_reads']))
 
