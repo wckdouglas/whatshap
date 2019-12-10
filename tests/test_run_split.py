@@ -11,11 +11,68 @@ import pysam
 from whatshap.cli.haplotag import run_haplotag
 from whatshap.cli.split import run_split
 
-def test_split():
+
+def test_split_bam():
 	with TemporaryDirectory() as tempdir:
-		outlist = tempdir + '/outlist.txt'
+		outlist = tempdir + '/outlist.tsv'
+		outbam1 = tempdir + '/outbam.bam'
+		# produce list of read assignments to haplotypes
+		run_haplotag(variant_file='tests/data/haplotag_1.vcf.gz', alignment_file='tests/data/haplotag.bam', haplotag_list=outlist, output=outbam1)
+		outbam_h1 = tempdir + '/outbamh1.bam'
+		outbam_h2 = tempdir + '/outbamh2.bam'
+		outbam_untagged = tempdir + '/outbamuntagged.bam'
+		run_split(reads_file='tests/data/haplotag.bam', list_file=outlist, output_h1=outbam_h1, output_h2=outbam_h2, output_untagged=outbam_untagged)
+
+		expected_splits = {}
+		for alignment in pysam.AlignmentFile(outbam1):
+			if alignment.has_tag('HP'):
+				expected_splits[alignment.query_name] = alignment.get_tag('HP')
+			else:
+				expected_splits[alignment.query_name] = 0
+		assert len(expected_splits) > 0
+
+		total_reads = 0
+		for hap, outfile in enumerate([outbam_untagged, outbam_h1, outbam_h2]):
+			for alignment in pysam.AlignmentFile(outfile):
+				hap_key = hap
+				assert expected_splits[alignment.query_name] == hap_key
+				total_reads += 1
+		assert total_reads == len(expected_splits)
+				
+
+def test_split_bam_large():
+	with TemporaryDirectory() as tempdir:
+		outlist = tempdir + '/outlist.tsv'
+		outbam1 = tempdir + '/outbam.bam'
+		# produce list of read assignments to haplotypes
+		run_haplotag(variant_file='tests/data/haplotag.large.vcf.gz', alignment_file='tests/data/haplotag.large.bam', haplotag_list=outlist, output=outbam1)
+		outbam_h1 = tempdir + '/outbamh1.bam'
+		outbam_h2 = tempdir + '/outbamh2.bam'
+		outbam_untagged = tempdir + '/outbamuntagged.bam'
+		run_split(reads_file='tests/data/haplotag.large.bam', list_file=outlist, output_h1=outbam_h1, output_h2=outbam_h2, output_untagged=outbam_untagged)
+
+		expected_splits = {}
+		for alignment in pysam.AlignmentFile(outbam1):
+			if alignment.has_tag('HP'):
+				expected_splits[alignment.query_name] = alignment.get_tag('HP')
+			else:
+				expected_splits[alignment.query_name] = 0
+		assert len(expected_splits) > 0
+
+		total_reads = 0
+		for hap, outfile in enumerate([outbam_untagged, outbam_h1, outbam_h2]):
+			for alignment in pysam.AlignmentFile(outfile):
+				hap_key = hap
+				assert expected_splits[alignment.query_name] == hap_key
+				total_reads += 1
+		assert total_reads == len(expected_splits)
+
+
+def test_split_poly():
+	with TemporaryDirectory() as tempdir:
+		outlist = tempdir + '/outlist.tsv'
 		outbam = tempdir + '/outbam.bam'
-		# produce a list of read assignments using haplotag
+		# produce list of read assignments to haplotypes
 		run_haplotag(variant_file='tests/data/haplotag_poly.vcf.gz', alignment_file='tests/data/haplotag_poly.bam', ploidy=4, output=outbam, haplotag_list=outlist)
 		# use list as input for split
 		outbam_h1 = tempdir + '/outbamh1.bam'
