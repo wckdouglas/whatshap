@@ -4,7 +4,7 @@ from math import ceil, floor
 from copy import deepcopy
 
 import logging
-from whatshap.core import Read, ReadSet
+from whatshap.core import Read, ReadSet, TriangleSparseMatrix
 from whatshap.cli.compare import compute_switch_flips_poly_bt
 from whatshap.threading import get_position_map, get_coverage
 
@@ -103,8 +103,8 @@ def get_phase(readset, var_table):
 
 def calc_overlap_and_diffs(readset):
     num_reads = len(readset)
-    overlap = SparseTriangleMatrix()
-    diffs = SparseTriangleMatrix()
+    overlap = TriangleSparseMatrix()
+    diffs = TriangleSparseMatrix()
 
     # Copy information from readset into lists, because direct access is very slow
     begins = [readset[i][0].position for i in range(num_reads)]
@@ -626,6 +626,7 @@ def draw_genetic_clustering(
         from pylab import savefig
 
         # Detect relevant clusters
+        clustering.sort(key=lambda x: -len(x))
         c_list = list(range(len(clustering)))
         num_c = len(c_list)
 
