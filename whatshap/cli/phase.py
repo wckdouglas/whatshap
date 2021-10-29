@@ -439,7 +439,7 @@ def run_whatshap(
                 else:
                     logger.info("---- Processing family with individuals: %s", ",".join(family))
                 max_coverage_per_sample = max(1, max_coverage // len(family))
-                logger.info("Using maximum coverage per sample of %dX", max_coverage_per_sample)
+                logger.debug("Using maximum coverage per sample of %dX", max_coverage_per_sample)
                 trios = family_trios[representative_sample]
                 assert len(family) == 1 or len(trios) > 0
 
@@ -586,9 +586,8 @@ def run_whatshap(
                     )
 
             with timers("write_vcf"):
-                logger.info("======== Writing VCF")
+                logger.info("Writing VCF ...")
                 changed_genotypes = vcf_writer.write(chromosome, superreads, components)
-                logger.info("Done writing VCF")
                 if changed_genotypes:
                     assert distrust_genotypes
                     logger.info("Changed %d genotypes while writing VCF", len(changed_genotypes))
