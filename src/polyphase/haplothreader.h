@@ -9,6 +9,7 @@
 #include <string> 
 #include <sstream>
 #include <algorithm>
+#include <limits>
     
 typedef uint32_t GlobalClusterId;
 typedef uint32_t LocalClusterId;
