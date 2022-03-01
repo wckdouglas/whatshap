@@ -147,7 +147,7 @@ class GenotypeLikelihoods:
                 [round((prob - m) * -10) for prob in self.log_prob_genotypes], ploidy=ploidy
             )
         else:
-            p = [10**x for x in self.log_prob_genotypes]
+            p = [10 ** x for x in self.log_prob_genotypes]
             s = sum(p)
             p = [x / s + regularizer for x in p]
             m = max(p)
@@ -711,7 +711,8 @@ def missing_headers(path: str) -> Tuple[List[str], List[str], List[str]]:
             h = PREDEFINED_FORMATS[fmt]
             if v.number != h.number or (
                 # "Float" instead of "Integer" is ok
-                v.type != h.typ and not (v.type == "Float" and h.typ == "Integer")
+                v.type != h.typ
+                and not (v.type == "Float" and h.typ == "Integer")
             ):
                 if fmt == "PS" and v.type != h.typ:
                     raise VcfError(
@@ -1052,7 +1053,7 @@ class PhasedVcfWriter(VcfAugmenter):
 
                 if pos in components and pos in phases and is_het:
                     haploid_component = (
-                        phases[pos]
+                        haploid_components[pos]
                         if (
                             haploid_components
                             and pos in haploid_components
