@@ -11,6 +11,8 @@ FROM base AS python_build
 RUN python -m pip install --upgrade pip && \
     pip install cython
 
+FROM python_build AS whatshap
 COPY . /opt
 WORKDIR /opt
 RUN pip install .
+CMD ["/usr/local/bin/whatshap"]
